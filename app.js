@@ -7,6 +7,8 @@ const M2_TO_FT2 = 10.7639;
 const STD_PRESSURE_PA = 101325;
 const DEFAULT_CITY_STATION_ID = "432950";
 const TARGET_SFTR = 500;
+const MILESTONE_DISPLAY_MS = 4000;
+const MILESTONE_QUEUE_GAP_MS = 4150;
 const TARGET_BASE_SFTR = 150;
 const BASE_SFTR_TOLERANCE = 20;
 const OCCUPANCY_62_1_2022 = {
@@ -151,6 +153,7 @@ const gameState = {
   revealed: false,
   current: null,
   dragActionId: "",
+  waterfallOpen: {},
 };
 const gameFx = {
   soundEnabled: true,
@@ -171,18 +174,25 @@ function id(base, caseId) {
 function runSplashScreen() {
   const splash = qs("splashScreen");
   if (!splash) return;
-  const reducedMotion = hasDom && window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-  const holdMs = reducedMotion ? 600 : 1900;
-  setTimeout(() => {
+  const start = qs("splashStart");
+  if (!start) return;
+  start.addEventListener("click", () => {
     splash.classList.add("hidden");
     setTimeout(() => splash.remove(), 520);
-  }, holdMs);
+  }, { once: true });
 }
 
-function setSplashCity(cityLabel) {
-  const el = qs("splashCity");
-  if (!el) return;
-  el.textContent = `Your building is located in ${cityLabel}`;
+function setSplashBrief(scenario) {
+  const [spaceName, floorName] = String(scenario.template.label || "").split("|").map((part) => part.trim());
+  const setText = (id, value) => {
+    const el = qs(id);
+    if (el) el.textContent = value;
+  };
+  setText("splashLocation", `Building location: ${scenario.city?.label || "Selected City"}`);
+  setText("splashSpace", `Space name: ${spaceName || scenario.template.label}`);
+  setText("splashFloor", `Floor: ${floorName || "Building Floor"}`);
+  setText("splashDateTime", `Date time: ${monthName(scenario.month)} ${String(scenario.hour).padStart(2, "0")}:00`);
+  setText("splashSftr", `Starting Case SF/TR: ${getSfPerTr(scenario.baseValues).toFixed(0)}`);
 }
 
 function getNum(base, caseId) {
@@ -440,8 +450,7 @@ function playGameSound(kind) {
     kind === "pick" ||
     kind === "finale-success" ||
     kind === "finale-fail" ||
-    kind === "milestone-300" ||
-    kind === "milestone-400"
+    kind.startsWith("milestone-")
   ) {
     playHtmlSound(kind);
   }
@@ -472,6 +481,10 @@ function playGameSound(kind) {
       playTone(ctx, 330, 110, "sawtooth", 0.02, 0);
       playTone(ctx, 277, 120, "sawtooth", 0.018, 120);
       playTone(ctx, 220, 170, "sawtooth", 0.017, 250);
+    } else if (kind === "milestone-200") {
+      playTone(ctx, 523, 85, "triangle", 0.024, 0);
+      playTone(ctx, 659, 95, "triangle", 0.022, 90);
+      playTone(ctx, 784, 110, "triangle", 0.02, 185);
     } else if (kind === "milestone-300") {
       playTone(ctx, 587, 90, "triangle", 0.028, 0);
       playTone(ctx, 740, 105, "triangle", 0.026, 95);
@@ -481,6 +494,11 @@ function playGameSound(kind) {
       playTone(ctx, 880, 115, "triangle", 0.028, 100);
       playTone(ctx, 1046, 135, "triangle", 0.026, 220);
       playTone(ctx, 1318, 165, "triangle", 0.024, 350);
+    } else if (kind === "milestone-500" || kind === "milestone-600" || kind === "milestone-700") {
+      playTone(ctx, 784, 95, "triangle", 0.03, 0);
+      playTone(ctx, 988, 115, "triangle", 0.028, 90);
+      playTone(ctx, 1174, 130, "triangle", 0.026, 200);
+      playTone(ctx, 1568, 170, "triangle", 0.024, 330);
     }
   });
 }
@@ -991,11 +1009,9 @@ function setGameOutcome(content = "", tone = "") {
 function renderOutcomeBanner({ success, sftr, points, target }) {
   const icon = success ? "✓" : "!";
   const eyebrow = success ? "Run Complete" : "Run Closed";
-  const title = success ? "Target Cleared" : "Target Missed";
-  const subcopy = success
-    ? `You pushed the building to ${sftr.toFixed(0)} SF/TR and scored the full improvement delta.`
-    : `Final result landed at ${sftr.toFixed(0)} SF/TR. The target stayed at ${target}.`;
-  const pointsLabel = success ? `+${points} pts` : "0 pts";
+  const title = success ? "Success!" : "Fail!";
+  const subcopy = `You reached ${sftr.toFixed(0)} SF/TR. The goal was ${target}.`;
+  const pointsLabel = `Score: ${points}`;
   return `
     <div class="outcome-shell">
       <div class="outcome-mark">${icon}</div>
@@ -1005,18 +1021,21 @@ function renderOutcomeBanner({ success, sftr, points, target }) {
         <p class="outcome-text">${subcopy}</p>
       </div>
       <div class="outcome-metrics">
-        <span class="outcome-chip primary">${sftr.toFixed(0)} SF/TR</span>
-        <span class="outcome-chip">${pointsLabel}</span>
-        <span class="outcome-chip">${target} target</span>
+        <span class="outcome-chip primary">${pointsLabel}</span>
       </div>
     </div>`;
 }
 
-function setPlayZoneState(text = "Drag a card here to build your solution", tone = "") {
+function getPlayZoneText(override = "") {
+  if (override) return override;
+  return `Drag cards here. ${gameState.picksUsed} of ${gameState.picksMax} cards picked.`;
+}
+
+function setPlayZoneState(text = "", tone = "") {
   const zone = qs("gamePlayZone");
   const label = qs("gamePlayZoneText");
   if (!zone || !label) return;
-  label.textContent = text;
+  label.textContent = getPlayZoneText(text);
   zone.classList.remove("active", "over");
   if (tone) zone.classList.add(tone);
 }
@@ -1039,10 +1058,13 @@ function clearMilestone() {
 function showMilestone(threshold) {
   const el = qs("gameMilestone");
   if (!el) return;
-  const tone = threshold === 400 ? "m400" : "m300";
-  const copy = threshold === 400
-    ? "Gold push. One more clean move can decide the run."
-    : "Momentum up. Keep trimming the biggest driver.";
+  const tone = threshold >= 500 ? "m500" : threshold >= 400 ? "m400" : threshold >= 300 ? "m300" : "m200";
+  const copy =
+    threshold >= 600 ? "Elite pace. Keep climbing." :
+    threshold >= 500 ? "Target line cleared. Push higher." :
+    threshold >= 400 ? "Gold push. One more clean move can decide the run." :
+    threshold >= 300 ? "Momentum up. Keep trimming the biggest driver." :
+    "Good start. Keep the pressure on.";
   el.innerHTML = `<span class="milestone-title">Milestone: ${threshold} SF/TR</span><span class="milestone-copy">${copy}</span>`;
   el.className = `game-milestone show ${tone}`;
   animateClass(el, "game-bump");
@@ -1051,12 +1073,15 @@ function showMilestone(threshold) {
     if (!el) return;
     el.className = "game-milestone";
     milestoneTimer = null;
-  }, 1900);
+  }, MILESTONE_DISPLAY_MS);
 }
 
 function handleMilestones(previousSftr, currentSftr) {
   if (!gameState.current) return;
-  const thresholds = [300, 400].filter((value) =>
+  const maxThreshold = Math.floor(currentSftr / 100) * 100;
+  const candidates = [];
+  for (let value = 200; value <= Math.max(200, maxThreshold); value += 100) candidates.push(value);
+  const thresholds = candidates.filter((value) =>
     previousSftr < value &&
     currentSftr >= value &&
     !gameState.current.milestonesSeen.has(value)
@@ -1065,7 +1090,7 @@ function handleMilestones(previousSftr, currentSftr) {
   thresholds.forEach((value) => gameState.current.milestonesSeen.add(value));
   clearMilestone();
   thresholds.forEach((value, idx) => {
-    const delay = idx * 2050;
+    const delay = idx * MILESTONE_QUEUE_GAP_MS;
     if (delay === 0) {
       showMilestone(value);
     } else {
@@ -1094,7 +1119,6 @@ function renderPlayedCards() {
 function updateGameMeta() {
   const scoreEl = qs("gameScore");
   const statusEl = qs("gameStatus");
-  if (scoreEl) scoreEl.textContent = `Score: ${gameState.score}`;
   if (statusEl) statusEl.textContent = "";
 }
 
@@ -1109,7 +1133,10 @@ function renderGameLoadBars(values) {
     { label: "Equipment", sensible: wattsToKw(metrics.equipmentSensible), latent: 0 },
     { label: "Ventilation", sensible: wattsToKw(metrics.ventSensible), latent: wattsToKw(metrics.ventLatent) },
   ];
-  return renderWaterfallChart(waterfallComponents).replace('class="viz-card"', 'class="viz-card game-waterfall"');
+  return renderWaterfallChart(waterfallComponents, {
+    chartKey: "live-waterfall",
+    cardClass: "game-waterfall",
+  });
 }
 
 function renderEndStateWaterfalls(scenario) {
@@ -1122,8 +1149,8 @@ function renderEndStateWaterfalls(scenario) {
   return `
     <div class="summary-grid">
       <div class="summary-compare-grid">
-        <section class="summary-card">${renderWaterfallChart(startComponents, { title: "Starting Case Waterfall", minCum, maxCum })}</section>
-        <section class="summary-card">${renderWaterfallChart(finalComponents, { title: "Final Case Waterfall", minCum, maxCum })}</section>
+        <section class="summary-card">${renderWaterfallChart(startComponents, { title: "Starting Case Waterfall", minCum, maxCum, chartKey: "start-waterfall" })}</section>
+        <section class="summary-card">${renderWaterfallChart(finalComponents, { title: "Final Case Waterfall", minCum, maxCum, chartKey: "final-waterfall" })}</section>
       </div>
     </div>`;
 }
@@ -1133,23 +1160,22 @@ function updateFaultDashboard() {
   if (!scenario) return;
   const baseSftr = getSfPerTr(scenario.baseValues);
   const currentSftr = getSfPerTr(scenario.currentValues);
-  const movesLeft = Math.max(0, gameState.picksMax - gameState.picksUsed);
   const ratio = Math.max(0, Math.min(1, currentSftr / 700));
 
   const baseEl = qs("gameBaseSftr");
   const currentEl = qs("gameCurrentSftr");
-  const movesEl = qs("gameMovesLeft");
-  const pickedEl = qs("gamePickedCount");
   const prompt = qs("gamePrompt");
   const loadBars = qs("gameLoadBars");
   const gaugeFill = qs("gameGaugeFill");
   if (baseEl) baseEl.textContent = baseSftr.toFixed(0);
   if (currentEl) currentEl.textContent = currentSftr.toFixed(0);
-  if (movesEl) movesEl.textContent = String(movesLeft);
-  if (pickedEl) pickedEl.textContent = `${gameState.picksUsed}/${gameState.picksMax}`;
   if (prompt) prompt.innerHTML = renderFaultPrompt(scenario);
-  if (loadBars) loadBars.innerHTML = gameState.revealed ? renderEndStateWaterfalls(scenario) : renderGameLoadBars(scenario.currentValues);
+  if (loadBars) {
+    loadBars.innerHTML = gameState.revealed ? renderEndStateWaterfalls(scenario) : renderGameLoadBars(scenario.currentValues);
+    bindWaterfallState(loadBars);
+  }
   if (gaugeFill) gaugeFill.style.width = `${(ratio * 100).toFixed(1)}%`;
+  setPlayZoneState();
 }
 
 function renderFaultActions() {
@@ -1180,7 +1206,7 @@ function renderFaultActions() {
         event.dataTransfer.setData("text/plain", gameState.dragActionId);
         event.dataTransfer.effectAllowed = "move";
       }
-      setPlayZoneState("Drop to play this card", "active");
+      setPlayZoneState(`Drop to play this card. ${gameState.picksUsed} of ${gameState.picksMax} cards picked.`, "active");
     });
     btn.addEventListener("dragend", () => {
       btn.classList.remove("action-dragging");
@@ -1308,12 +1334,13 @@ function renderStartingCaseResults(scenario) {
 function startFaultGame() {
   const preset = pickRandom(STARTING_SCENARIO_LIBRARY);
   gameState.current = preset ? scenarioFromPreset(preset) : makeReachableFaultScenario();
-  setSplashCity(gameState.current.city?.label || "the selected city");
+  setSplashBrief(gameState.current);
   gameState.current.baseSftr = getSfPerTr(gameState.current.baseValues);
   gameState.current.bestPossibleSftr = evaluateBestFiveCardSftr(gameState.current);
   gameState.picksUsed = 0;
   gameState.revealed = false;
   gameState.active = true;
+  gameState.waterfallOpen = {};
   const table = qs("gameStartingCaseTable");
   const baseResults = qs("gameStartingCaseResults");
   if (table) table.innerHTML = renderStartingCaseTable(gameState.current);
@@ -1321,7 +1348,7 @@ function startFaultGame() {
   setGameMessage("Pick 5 cards. Results update after each pick.");
   setGameOutcome();
   clearMilestone();
-  setPlayZoneState("Drag a card here to build your solution");
+  setPlayZoneState();
   playGameSound("start");
   renderFaultActions();
   updateFaultDashboard();
@@ -1347,7 +1374,7 @@ function applyFaultAction(actionId) {
   gameState.picksUsed += 1;
   playGameSound("pick");
   renderFaultActions();
-  setPlayZoneState("Drag a card here to build your solution");
+  setPlayZoneState();
   updateFaultDashboard();
   triggerGamePickAnimations();
 
@@ -1450,6 +1477,9 @@ function renderWaterfallChart(components, options = {}) {
   const rows = built.rows;
   const range = Math.max(0.001, maxCum - minCum);
   const title = options.title || "Waterfall: Cumulative Contributions";
+  const chartKey = options.chartKey || "";
+  const isOpen = chartKey ? Boolean(gameState.waterfallOpen[chartKey]) : false;
+  const cardClass = options.cardClass ? ` ${options.cardClass}` : "";
 
   const bars = rows
     .map((r) => {
@@ -1475,11 +1505,27 @@ function renderWaterfallChart(components, options = {}) {
     .join("");
 
   return `
-    <div class="viz-card">
-      <h4>${title}</h4>
-      ${bars}
-    </div>
+    <details class="viz-card viz-card-collapsible${cardClass}" ${isOpen ? "open" : ""} ${chartKey ? `data-waterfall-key="${chartKey}"` : ""}>
+      <summary class="viz-summary">
+        <h4>${title}</h4>
+        <span class="viz-chevron" aria-hidden="true">▾</span>
+      </summary>
+      <div class="viz-body">
+        ${bars}
+      </div>
+    </details>
   `;
+}
+
+function bindWaterfallState(container) {
+  if (!container) return;
+  container.querySelectorAll("details[data-waterfall-key]").forEach((details) => {
+    details.addEventListener("toggle", () => {
+      const key = details.getAttribute("data-waterfall-key");
+      if (!key) return;
+      gameState.waterfallOpen[key] = details.open;
+    });
+  });
 }
 
 function getWaterfallComponentsFromValues(values) {
