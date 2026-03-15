@@ -1,0 +1,97 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Cooling Load Calculator</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <div id="splashScreen" class="splash-screen" aria-hidden="true">
+    <div class="splash-core">
+      <p class="splash-kicker">HVAC ARCADE</p>
+      <h1 class="splash-title">LOAD SHREDDER</h1>
+      <p id="splashCity" class="splash-city">Your building is located in --</p>
+      <div class="splash-bar">
+        <span class="splash-fill"></span>
+      </div>
+    </div>
+  </div>
+  <main class="shell">
+    <header class="hero">
+      <h1>Load Shredder</h1>
+    </header>
+    <section class="card game-card" aria-label="Cooling Load Game">
+      <div class="game-head">
+        <h2>Get to 500 SF/TR | Pick 5 Cards</h2>
+        <div class="game-head-tools">
+          <button type="button" id="gameSound" class="icon-btn game-head-icon" title="Toggle Sound" aria-label="Toggle Sound">
+            <span id="gameSoundIcon" class="icon-glyph">🔊</span>
+            <span class="sr-only">Toggle Sound</span>
+          </button>
+          <span id="gameScore" class="game-score">Score: 0</span>
+        </div>
+      </div>
+      <p id="gameStatus" class="muted"></p>
+      <div class="game-meta-panel">
+        <div id="gamePrompt" class="game-prompt">
+          Pick 5 cards out of 10. Each card applies a fixed change from the starting case.
+        </div>
+        <div class="game-kpis">
+          <div class="game-kpi">
+            <span class="gk-label">Starting Case SF/TR</span>
+            <span id="gameBaseSftr" class="gk-value">--</span>
+          </div>
+          <div class="game-kpi">
+            <span class="gk-label">Current SF/TR</span>
+            <span id="gameCurrentSftr" class="gk-value">--</span>
+          </div>
+          <div class="game-kpi">
+            <span class="gk-label">Moves Left</span>
+            <span id="gameMovesLeft" class="gk-value">--</span>
+          </div>
+          <div class="game-kpi">
+            <span class="gk-label">Cards Picked</span>
+            <span id="gamePickedCount" class="gk-value">--</span>
+          </div>
+        </div>
+      </div>
+      <div class="game-gauge-wrap">
+        <div class="game-gauge">
+          <div id="gameGaugeFill" class="game-gauge-fill"></div>
+          <span class="game-gauge-target">500</span>
+        </div>
+      </div>
+      <div id="gameMilestone" class="game-milestone" aria-live="polite"></div>
+      <div id="gameOutcome" class="game-outcome" aria-live="polite"></div>
+      <div id="gameLoadBars" class="game-load-bars"></div>
+      <div id="gamePlayZone" class="play-zone" aria-label="Drop cards here to play">
+        <span id="gamePlayZoneText" class="play-zone-text">Drag a card here to build your solution</span>
+        <div id="gamePlayedCards" class="played-cards" aria-live="polite"></div>
+      </div>
+      <div id="gameActions" class="game-actions"></div>
+      <section class="game-starting-case">
+        <div class="game-starting-grid">
+          <div>
+            <h3>Starting Case</h3>
+            <div id="gameStartingCaseTable" class="game-case-table muted"></div>
+          </div>
+          <div>
+            <h3>Starting Case Results</h3>
+            <section id="gameStartingCaseResults" class="card game-starting-results">
+              <p class="muted"></p>
+            </section>
+          </div>
+        </div>
+      </section>
+      <p id="gameFeedback" class="game-feedback muted">Cross 500 SF/TR to score. Higher SF/TR wins more points.</p>
+    </section>
+
+    <footer class="footnote">
+      <p>This tool is ASHRAE-informed for practical sizing support and is not a replacement for full code-required load calculations.</p>
+    </footer>
+  </main>
+
+  <script src="app.js"></script>
+</body>
+</html>
