@@ -39,7 +39,7 @@ body {
   place-items: center;
   overflow: hidden;
   background:
-    url("assets/false-color-cleaned.jpg");
+    url("assets/false-color-cleaned.jpg?v=20260315b");
   background-size: cover;
   background-position: center center;
   background-repeat: no-repeat;
