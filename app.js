@@ -712,6 +712,7 @@ function makeFaultScenario() {
     baseValues: values,
     currentValues: { ...values },
     pickedCards: new Set(),
+    playedCards: [],
     milestonesSeen: new Set(),
   };
 }
@@ -731,6 +732,7 @@ function scenarioFromPreset(preset) {
     baseValues: values,
     currentValues: cloneGameValues(values),
     pickedCards: new Set(),
+    playedCards: [],
     milestonesSeen: new Set(),
     cardPower: preset.cardPower ?? 1,
   };
@@ -813,30 +815,28 @@ function getFaultActions(scenario) {
       },
     },
     {
-      id: "vent",
-      title: "Ventilation Reset",
-      preview(values, scenario) {
-        const defaults = OCCUPANCY_62_1_2022[scenario.template.occupancy] || OCCUPANCY_62_1_2022.office;
-        const rpNext = defaults.rp * Math.max(0.08, 1.1 - 0.35 * power);
-        const raNext = defaults.ra * Math.max(0.08, 1.1 - 0.35 * power);
-        return `Change OA/person from ${values.oaPerPerson.toFixed(2)} to ${rpNext.toFixed(2)} and OA/area from ${values.oaPerArea.toFixed(2)} to ${raNext.toFixed(2)}.`;
+      id: "rh-reset",
+      title: "RH Setpoint Reset",
+      preview(values) {
+        const rhNext = 70;
+        return `Change max RH from ${values.rhIn.toFixed(0)}% to ${rhNext}%.`;
       },
-      apply(values, scenario) {
-        const defaults = OCCUPANCY_62_1_2022[scenario.template.occupancy] || OCCUPANCY_62_1_2022.office;
-        values.oaPerPerson = round2(defaults.rp * Math.max(0.08, 1.1 - 0.35 * power));
-        values.oaPerArea = round2(defaults.ra * Math.max(0.08, 1.1 - 0.35 * power));
+      apply(values) {
+        values.rhIn = 70;
+        values.wIn = humidityRatioGkgFromDbRh(values.tInCool, values.rhIn);
       },
     },
     {
       id: "diversity",
       title: "Occupancy Diversity",
       preview(values) {
-        const peopleNext = Math.max(1, round1(values.people * (0.38 ** power)));
+        const peopleNow = Math.max(1, Math.round(values.people));
+        const peopleNext = Math.max(1, Math.round(values.people * (0.38 ** power)));
         const areaNext = round1(values.floorArea / peopleNext);
-        return `Change effective occupants from ${values.people.toFixed(1)} to ${peopleNext.toFixed(1)} and area/person from ${values.areaPerPerson.toFixed(1)} to ${areaNext.toFixed(1)} m2/person.`;
+        return `Change effective occupants from ${peopleNow} to ${peopleNext} and area/person from ${values.areaPerPerson.toFixed(1)} to ${areaNext.toFixed(1)} m2/person.`;
       },
       apply(values) {
-        const peopleNext = Math.max(1, round1(values.people * (0.38 ** power)));
+        const peopleNext = Math.max(1, Math.round(values.people * (0.38 ** power)));
         values.areaPerPerson = round1(values.floorArea / peopleNext);
         values.people = peopleNext;
       },
@@ -847,7 +847,7 @@ function getFaultActions(scenario) {
       preview(values) {
         const rpNext = Math.max(0.08, round2(values.oaPerPerson * (0.18 ** power)));
         const raNext = Math.max(0.02, round2(values.oaPerArea * (0.75 ** power)));
-        return `Change OA/person from ${values.oaPerPerson.toFixed(2)} to ${rpNext.toFixed(2)} and OA/area from ${values.oaPerArea.toFixed(2)} to ${raNext.toFixed(2)}.`;
+        return "Outside air requirements adjusted to match occupant diversity.";
       },
       apply(values) {
         values.oaPerPerson = Math.max(0.08, round2(values.oaPerPerson * (0.18 ** power)));
@@ -884,11 +884,11 @@ function getFaultActions(scenario) {
       id: "window",
       title: "WWR Reduction",
       preview(values) {
-        const nextWwr = Math.max(0.05, values.wwr - 0.3 * power);
+        const nextWwr = Math.max(0.10, Math.min(1.00, values.wwr - 0.3 * power));
         return `Change WWR from ${(values.wwr * 100).toFixed(0)}% to ${(nextWwr * 100).toFixed(0)}%.`;
       },
       apply(values) {
-        const nextWwr = Math.max(0.05, values.wwr - 0.3 * power);
+        const nextWwr = Math.max(0.10, Math.min(1.00, values.wwr - 0.3 * power));
         values.wwr = round2(nextWwr);
         values.windowArea = values.wallArea * values.wwr;
       },
@@ -917,7 +917,7 @@ function getFaultActions(scenario) {
     },
     {
       id: "setpoint",
-      title: "Setpoint Reset",
+      title: "Temperature Setpoint Reset",
       preview(values) {
         const tInNext = Math.min(values.tOutCool - 0.1, round1(values.tInCool + 4.0 * power));
         return `Change indoor DB from ${values.tInCool.toFixed(1)} C to ${tInNext.toFixed(1)} C.`;
@@ -1026,6 +1026,14 @@ function renderOutcomeBanner({ success, sftr, points, target }) {
     </div>`;
 }
 
+function formatOaPerPerson(value) {
+  return `${value.toFixed(2)} L/s-person`;
+}
+
+function formatOaPerArea(value) {
+  return `${value.toFixed(2)} L/s-m2`;
+}
+
 function getPlayZoneText(override = "") {
   if (override) return override;
   return `Drag cards here. ${gameState.picksUsed} of ${gameState.picksMax} cards picked.`;
@@ -1099,18 +1107,33 @@ function handleMilestones(previousSftr, currentSftr) {
   });
 }
 
+function getCardToneClass(actionId) {
+  const toneMap = {
+    glass: "tone-blue",
+    shade: "tone-orange",
+    tight: "tone-green",
+    "rh-reset": "tone-purple",
+    diversity: "tone-gold",
+    dcv: "tone-blue",
+    lights: "tone-orange",
+    plugs: "tone-green",
+    window: "tone-purple",
+    roof: "tone-gold",
+    wall: "tone-blue",
+    setpoint: "tone-orange",
+  };
+  return toneMap[actionId] || "tone-blue";
+}
+
 function renderPlayedCards() {
   const container = qs("gamePlayedCards");
   if (!container || !gameState.current) return;
-  const actions = getFaultActions(gameState.current);
-  const picked = actions.filter((action) => gameState.current.pickedCards.has(action.id));
-  container.innerHTML = picked
+  container.innerHTML = gameState.current.playedCards
     .map((action) => {
-      const desc = action.preview ? action.preview(gameState.current.currentValues, gameState.current) : "";
       return `
-        <div class="played-card">
+        <div class="played-card ${getCardToneClass(action.id)}">
           <strong>${action.title}</strong>
-          <small>${desc}</small>
+          <small>${action.desc}</small>
         </div>`;
     })
     .join("");
@@ -1188,7 +1211,7 @@ function renderFaultActions() {
       const desc = a.preview ? a.preview(gameState.current.currentValues, gameState.current) : "";
       const enabled = !(gameState.revealed || gameState.picksUsed >= gameState.picksMax);
       return `
-        <button type="button" class="action-chip" data-action-id="${a.id}" ${enabled ? 'draggable="true"' : ""} ${enabled ? "" : "disabled"}>
+        <button type="button" class="action-chip ${getCardToneClass(a.id)}" data-action-id="${a.id}" ${enabled ? 'draggable="true"' : ""} ${enabled ? "" : "disabled"}>
           <strong>${a.title}</strong>
           <small>${desc}</small>
         </button>`;
@@ -1366,11 +1389,13 @@ function applyFaultAction(actionId) {
   const action = getFaultActions(gameState.current).find((a) => a.id === actionId);
   if (!action) return;
 
+  const actionDesc = action.preview ? action.preview(gameState.current.currentValues, gameState.current) : "";
   const beforeSftr = getSfPerTr(gameState.current.currentValues);
   action.apply(gameState.current.currentValues, gameState.current);
   gameState.current.currentValues.windowArea = gameState.current.currentValues.wallArea * gameState.current.currentValues.wwr;
   gameState.current.currentValues.people = gameState.current.currentValues.floorArea / gameState.current.currentValues.areaPerPerson;
   gameState.current.pickedCards.add(actionId);
+  gameState.current.playedCards.push({ id: action.id, title: action.title, desc: actionDesc });
   gameState.picksUsed += 1;
   playGameSound("pick");
   renderFaultActions();
@@ -1652,8 +1677,8 @@ function validateInputs(values) {
     }
   }
 
-  if (values.wwr < 0 || values.wwr > 100) {
-    return "Window-to-Wall Ratio (%) must be between 0 and 100.";
+  if (values.wwr < 0.10 || values.wwr > 1.00) {
+    return "Window-to-Wall Ratio must be between 10% and 100%.";
   }
 
   if (values.areaPerPerson <= 0) {
