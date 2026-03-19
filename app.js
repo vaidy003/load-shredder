@@ -154,6 +154,7 @@ const gameState = {
   current: null,
   dragActionId: "",
   waterfallOpen: {},
+  waterfallTouched: {},
 };
 const gameFx = {
   soundEnabled: true,
@@ -162,6 +163,7 @@ const gameFx = {
 };
 let milestoneTimer = null;
 let milestoneQueueTimer = null;
+let waterfallAutoOpenTimer = null;
 
 function qs(id) {
   return hasDom ? document.getElementById(id) : null;
@@ -592,9 +594,12 @@ function buildExcelStartingScenarioLibrary() {
         values: {
           floorArea: space.values.floorArea,
           wallArea: space.values.wallArea,
+          grossWallArea: space.values.wallArea + space.values.windowArea,
           roofArea: space.values.roofArea,
           windowArea: space.values.windowArea,
-          wwr: space.values.wallArea > 0 ? round2(space.values.windowArea / space.values.wallArea) : 0,
+          wwr: (space.values.wallArea + space.values.windowArea) > 0
+            ? round2(space.values.windowArea / (space.values.wallArea + space.values.windowArea))
+            : 0,
           areaPerPerson,
           people,
           uWall: assumptions.uWall,
@@ -660,7 +665,7 @@ function makeFaultScenario() {
   const template = pickRandom(templates);
   const city = indiaProfiles.length ? pickRandom(indiaProfiles) : null;
   const floorArea = round1(rand(template.floorArea[0], template.floorArea[1]));
-  const wallArea = round1(floorArea * rand(template.wallAreaFactor[0], template.wallAreaFactor[1]));
+  const grossWallArea = round1(floorArea * rand(template.wallAreaFactor[0], template.wallAreaFactor[1]));
   const roofArea = round1(floorArea * rand(0.96, 1.12));
   const occupancyDefaults = OCCUPANCY_62_1_2022[template.occupancy] || OCCUPANCY_62_1_2022.office;
   const wwrPct = round1(rand(34, 58));
@@ -673,10 +678,11 @@ function makeFaultScenario() {
 
   const values = {
     floorArea,
-    wallArea,
+    grossWallArea,
     wwr: wwrPct / 100,
     areaPerPerson,
-    windowArea: wallArea * (wwrPct / 100),
+    wallArea: grossWallArea * (1 - (wwrPct / 100)),
+    windowArea: grossWallArea * (wwrPct / 100),
     roofArea,
     uWall: round2(rand(1.1, 2.1)),
     uWindow: round2(rand(3.2, 5.0)),
@@ -744,8 +750,17 @@ function getSfPerTr(values) {
   return designTr > 0 ? (values.floorArea * M2_TO_FT2) / designTr : 0;
 }
 
+function clampWwr(wwr, wallArea = 0) {
+  if (!(wallArea > 0)) return 0;
+  return Math.max(0.10, Math.min(0.95, wwr));
+}
+
 function normalizeGameValues(values) {
-  values.windowArea = values.wallArea * values.wwr;
+  const grossWallArea = values.grossWallArea ?? (values.wallArea + values.windowArea);
+  values.grossWallArea = Math.max(0, grossWallArea);
+  values.wwr = clampWwr(values.wwr, values.grossWallArea);
+  values.windowArea = values.grossWallArea * values.wwr;
+  values.wallArea = values.grossWallArea - values.windowArea;
   values.people = values.floorArea / values.areaPerPerson;
   values.wIn = humidityRatioGkgFromDbRh(values.tInCool, values.rhIn);
 }
@@ -884,13 +899,12 @@ function getFaultActions(scenario) {
       id: "window",
       title: "WWR Reduction",
       preview(values) {
-        const nextWwr = Math.max(0.10, Math.min(1.00, values.wwr - 0.3 * power));
+        const nextWwr = Math.max(0.10, Math.min(0.95, values.wwr - 0.3 * power));
         return `Change WWR from ${(values.wwr * 100).toFixed(0)}% to ${(nextWwr * 100).toFixed(0)}%.`;
       },
       apply(values) {
-        const nextWwr = Math.max(0.10, Math.min(1.00, values.wwr - 0.3 * power));
+        const nextWwr = Math.max(0.10, Math.min(0.95, values.wwr - 0.3 * power));
         values.wwr = round2(nextWwr);
-        values.windowArea = values.wallArea * values.wwr;
       },
     },
     {
@@ -1061,6 +1075,29 @@ function clearMilestone() {
   if (!el) return;
   el.innerHTML = "";
   el.className = "game-milestone";
+}
+
+function clearWaterfallAutoOpenTimer() {
+  if (waterfallAutoOpenTimer) {
+    clearTimeout(waterfallAutoOpenTimer);
+    waterfallAutoOpenTimer = null;
+  }
+}
+
+function scheduleEndStateWaterfallAutoOpen() {
+  clearWaterfallAutoOpenTimer();
+  waterfallAutoOpenTimer = setTimeout(() => {
+    const keys = ["start-waterfall", "final-waterfall"];
+    let changed = false;
+    keys.forEach((key) => {
+      if (!gameState.waterfallTouched[key]) {
+        gameState.waterfallOpen[key] = true;
+        changed = true;
+      }
+    });
+    waterfallAutoOpenTimer = null;
+    if (changed) updateFaultDashboard();
+  }, 2000);
 }
 
 function showMilestone(threshold) {
@@ -1364,6 +1401,8 @@ function startFaultGame() {
   gameState.revealed = false;
   gameState.active = true;
   gameState.waterfallOpen = {};
+  gameState.waterfallTouched = {};
+  clearWaterfallAutoOpenTimer();
   const table = qs("gameStartingCaseTable");
   const baseResults = qs("gameStartingCaseResults");
   if (table) table.innerHTML = renderStartingCaseTable(gameState.current);
@@ -1392,8 +1431,7 @@ function applyFaultAction(actionId) {
   const actionDesc = action.preview ? action.preview(gameState.current.currentValues, gameState.current) : "";
   const beforeSftr = getSfPerTr(gameState.current.currentValues);
   action.apply(gameState.current.currentValues, gameState.current);
-  gameState.current.currentValues.windowArea = gameState.current.currentValues.wallArea * gameState.current.currentValues.wwr;
-  gameState.current.currentValues.people = gameState.current.currentValues.floorArea / gameState.current.currentValues.areaPerPerson;
+  normalizeGameValues(gameState.current.currentValues);
   gameState.current.pickedCards.add(actionId);
   gameState.current.playedCards.push({ id: action.id, title: action.title, desc: actionDesc });
   gameState.picksUsed += 1;
@@ -1432,6 +1470,7 @@ function finalizeGameScore() {
   }
   renderFaultActions();
   updateFaultDashboard();
+  scheduleEndStateWaterfallAutoOpen();
   updateGameMeta();
 }
 
@@ -1548,6 +1587,7 @@ function bindWaterfallState(container) {
     details.addEventListener("toggle", () => {
       const key = details.getAttribute("data-waterfall-key");
       if (!key) return;
+      gameState.waterfallTouched[key] = true;
       gameState.waterfallOpen[key] = details.open;
     });
   });
@@ -1677,8 +1717,8 @@ function validateInputs(values) {
     }
   }
 
-  if (values.wwr < 0.10 || values.wwr > 1.00) {
-    return "Window-to-Wall Ratio must be between 10% and 100%.";
+  if (values.wwr < 0.10 || values.wwr > 0.95) {
+    return "Window-to-Wall Ratio must be between 10% and 95%.";
   }
 
   if (values.areaPerPerson <= 0) {
@@ -1697,14 +1737,16 @@ function collectValues(caseId) {
   const rhIn = getNum("rhIn", caseId);
   const wInDerived = humidityRatioGkgFromDbRh(tInCool, rhIn);
   const floorArea = getNum("floorArea", caseId);
-  const wallArea = getNum("wallArea", caseId);
+  const grossWallArea = getNum("wallArea", caseId);
   const wwrPct = getNum("wwr", caseId);
-  const wwr = wwrPct / 100;
+  const wwr = clampWwr(wwrPct / 100, grossWallArea);
   const areaPerPerson = getNum("areaPerPerson", caseId);
-  const windowArea = wallArea * wwr;
+  const windowArea = grossWallArea * wwr;
+  const wallArea = grossWallArea - windowArea;
   const people = areaPerPerson > 0 ? floorArea / areaPerPerson : 0;
   return {
     floorArea,
+    grossWallArea,
     wallArea,
     wwr,
     areaPerPerson,
